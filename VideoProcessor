@@ -1,0 +1,161 @@
+import AVFoundation
+import UIKit
+
+class VideoProcessor {
+    let inputURL: URL
+    let outputURL: URL
+    let videoFrame: CGRect
+    let canvasImageFrame: CGRect
+    let backgroundColor: CGColor
+    
+    var outputPresetName: String = AVAssetExportPresetHighestQuality
+    
+    private var overlays: [BaseOverlay] = []
+    
+    var videoSize: CGSize {
+        let asset = AVURLAsset(url: inputURL)
+        return asset.tracks(withMediaType: AVMediaType.video).first?.naturalSize ?? CGSize.zero
+    }
+    
+    var videoDuration: TimeInterval {
+        let asset = AVURLAsset(url: inputURL)
+        return asset.duration.seconds
+    }
+    
+    private var asset: AVAsset {
+        return AVURLAsset(url: inputURL)
+    }
+    
+    // MARK: Initializers
+    
+    init(inputURL: URL, outputURL: URL, videoFrame: CGRect, canvasImageFrame: CGRect, backgroundColor: CGColor) {
+        self.inputURL = inputURL
+        self.outputURL = outputURL
+        self.videoFrame = videoFrame
+        self.canvasImageFrame = canvasImageFrame
+//        self.canvasImageFrame = CGRect(origin: .zero, size: CGSize(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height))
+//        self.canvasImageFrame = CGRect(origin: canvasImageFrame.origin, size: CGSize(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height))
+//        self.canvasImageFrame = CGRect(origin: .zero, size: canvasImageFrame.size)
+        self.backgroundColor = backgroundColor
+    }
+    
+    // MARK: Processing
+    func process(_ completionHandler: @escaping (_ exportSession: AVAssetExportSession?) -> Void) {
+        print("video final frame is \(videoFrame)")
+        print("canvas final frame is \(canvasImageFrame)")
+        let composition = AVMutableComposition()
+        let asset = AVURLAsset(url: inputURL)
+        
+        guard let videoTrack = asset.tracks(withMediaType: AVMediaType.video).first else {
+            completionHandler(nil)
+            return
+        }
+        
+        guard let compositionVideoTrack: AVMutableCompositionTrack = composition.addMutableTrack(withMediaType: AVMediaType.video, preferredTrackID: CMPersistentTrackID(kCMPersistentTrackID_Invalid)) else {
+            completionHandler(nil)
+            return
+        }
+        
+        let timeRange = CMTimeRangeMake(start: CMTime.zero, duration: asset.duration)
+
+        do {
+            try compositionVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: CMTime.zero)
+            compositionVideoTrack.preferredTransform = videoTrack.preferredTransform
+        } catch {
+            completionHandler(nil)
+            return
+        }
+        
+        if let audioTrack = asset.tracks(withMediaType: AVMediaType.audio).first {
+            let compositionAudioTrack = composition.addMutableTrack(withMediaType: AVMediaType.audio, preferredTrackID: CMPersistentTrackID(kCMPersistentTrackID_Invalid))
+
+            do {
+                try compositionAudioTrack?.insertTimeRange(timeRange, of: audioTrack, at: CMTime.zero)
+            } catch {
+                completionHandler(nil)
+                return
+            }
+        }
+        
+        let storySize = CGSize(width: 1080, height: 1920)
+
+        let overlayLayer = CALayer()
+        let videoLayer = CALayer()
+//        let videoLayer = AVPlayerLayer()
+        overlayLayer.frame = canvasImageFrame
+//        let aspectRatio = CGSize(width: 1080, height: 1920)
+//        videoLayer.frame = AVMakeRect(aspectRatio: UIScreen.main.bounds.size, insideRect: videoFrame)
+//        videoLayer.frame = videoFrame
+        videoLayer.frame = CGRect(origin: videoFrame.origin, size: canvasImageFrame.size.aspectFill(into: videoFrame.size))
+        videoLayer.isGeometryFlipped = true
+//        videoLayer.videoGravity = .resizeAspectFill // AVPlayerLayer
+//        videoLayer.contentsCenter = .infinite
+        videoLayer.contentsGravity = .resizeAspectFill
+        overlayLayer.backgroundColor = backgroundColor
+        overlayLayer.isGeometryFlipped = true
+        print("1VIDEOLAYER CONTENTS FLIPPED \(videoLayer.contentsAreFlipped())")
+        overlayLayer.addSublayer(videoLayer)
+        videoLayer.isGeometryFlipped = true
+        print("2VIDEOLAYER CONTENTS FLIPPED \(videoLayer.contentsAreFlipped())")
+        print("OVERLAYLAYER CONTENTS FLIPPED \(overlayLayer.contentsAreFlipped())")
+        overlays.forEach { (overlay) in
+            let layer = overlay.layer
+            layer.add(overlay.startAnimation, forKey: "startAnimation")
+            layer.add(overlay.endAnimation, forKey: "endAnimation")
+            overlayLayer.addSublayer(layer)
+        }
+        overlayLayer.isGeometryFlipped = true
+        print("2OVERLAYLAYER CONTENTS FLIPPED \(overlayLayer.contentsAreFlipped())")
+        let videoComposition = AVMutableVideoComposition()
+//        videoComposition.renderSize = CGSize(width: 1080, height: 1920)
+        let actualRenderSize = CGSize(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
+//        videoComposition.renderSize = actualRenderSize.aspectFit(into: actualRenderSize)
+        print("RENDER SIZE ASPECT \(actualRenderSize.aspectFit(into: actualRenderSize))")
+        print("2RENDER SIZE ASPECT \(actualRenderSize.aspectFit(into: storySize))")
+        videoComposition.renderSize = canvasImageFrame.size
+        videoComposition.frameDuration = CMTimeMake(value: 1, timescale: 30)
+        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(postProcessingAsVideoLayer: videoLayer, in: overlayLayer)
+
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRangeMake(start: .zero, duration: composition.duration)
+        _ = composition.tracks(withMediaType: AVMediaType.video)[0] as AVAssetTrack
+
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+        
+        
+        let videoDimensions = resolutionSizeForLocalVideo(url: inputURL as NSURL)
+        print("DIMENSIONS ARE \(videoDimensions) & SIZE IS \(videoSize)")
+//        let transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
+//        let scale = videoSize.width / videoFrame.size.width
+//        let scaledSize = CGSize(width: videoSize.width * scale - 2, height: videoSize.height * scale - 2)
+//        let transform = CGAffineTransform(scaleX: scale, y: scale)
+
+        let widthRatio = videoFrame.width / videoSize.width
+        let heightRatio = videoFrame.height / videoSize.height
+        let aspectFillRatio = max(widthRatio, heightRatio)
+//        return CGSize(width: self.width * aspectFillRatio, height: self.height * aspectFillRatio)
+        print("aspectFillRatio is \(aspectFillRatio)")
+//        let transform = CGAffineTransform(scaleX: (videoSize.width * aspectFillRatio), y: (videoSize.height * aspectFillRatio))
+        let transform = CGAffineTransform(scaleX: aspectFillRatio, y: aspectFillRatio)
+//        layerInstruction.setTransform(transform, at: .zero)
+        instruction.layerInstructions = [layerInstruction]
+        videoComposition.instructions = [instruction]
+
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: outputPresetName) else {
+            completionHandler(nil)
+            return
+        }
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = AVFileType.mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+        exportSession.videoComposition = videoComposition
+        exportSession.exportAsynchronously { () -> Void in
+            completionHandler(exportSession)
+        }
+    }
+    
+    func addOverlay(_ overlay: BaseOverlay) {
+        overlays.append(overlay)
+    }
+}
